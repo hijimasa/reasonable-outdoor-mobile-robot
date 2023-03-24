@@ -1,3 +1,2 @@
-# cheep-outdoor-mobile-robot
+# reasonable-outdoor-mobile-robot
 
-TODO: ネジと圧着端子の分もBoMに追記する
