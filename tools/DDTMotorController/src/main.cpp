@@ -5,6 +5,9 @@
 const int SPI_CS_PIN = 9;
 mcp2515_can CAN(SPI_CS_PIN); // Set CS pin
 
+const int EMERGENCY_PIN = 7;
+const int FREE_ROTATION_PIN = 6;
+
 const int motor_total_num = 2;
 int motor_velocities[8]         = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_velocities[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -15,8 +18,10 @@ void setup() {
   unsigned char read_len;
   unsigned char read_buf[16];
 
+  pinMode(EMERGENCY_PIN, INPUT_PULLUP);
+  pinMode(FREE_ROTATION_PIN, INPUT_PULLUP);
+
   Serial.begin(9600);
-  while(!Serial){};
 
   while (CAN_OK != CAN.begin(CAN_500KBPS)) {             // init can bus : baudrate = 500k
     delay(100);
@@ -54,7 +59,10 @@ void loop() {
   unsigned char read_len;
   unsigned char read_buf[16];
 
-  if (0) // free
+  int free_rotation_pin_mode = digitalRead(FREE_ROTATION_PIN);
+  int emergency_pin_mode = digitalRead(EMERGENCY_PIN);
+
+  if (free_rotation_pin_mode == LOW) // free
   {
     const unsigned char disable_mode_stmp[8] = {0x09, 0x09, 0, 0, 0, 0, 0, 0};
     CAN.sendMsgBuf(0x105, 0, 8, disable_mode_stmp);
@@ -81,7 +89,7 @@ void loop() {
     }
 
     unsigned char velocities_stmp[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    if (1) // not emergency
+    if (emergency_pin_mode == LOW) // not emergency
     {
       for (int motor_num = 0; motor_num < 4; motor_num++)
       {
@@ -90,7 +98,7 @@ void loop() {
       }
     }
     CAN.sendMsgBuf(0x32, 0, 8, velocities_stmp);
-    if (1) // not emergency
+    if (emergency_pin_mode == LOW) // not emergency
     {
       for (int motor_num = 4; motor_num < 8; motor_num++)
       {
