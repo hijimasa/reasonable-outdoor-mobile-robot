@@ -38,8 +38,11 @@
   
 # 参照
 
-TODO:ROSパッケージ及びROS2パッケージのリポジトリを作成
+- ROSパッケージ
 
-# TODO
+  [reasonable_outdoor_mobile_robot_ros_controller](https://github.com/hijimasa/reasonable_outdoor_mobile_robot_ros_controller)
+  
+- ROS2パッケージ
 
-TODO: 非常停止時に減速して停止するように改良
+  [reasonable_outdoor_mobile_robot_ros2_controller](https://github.com/hijimasa/reasonable_outdoor_mobile_robot_ros2_controller)
+
