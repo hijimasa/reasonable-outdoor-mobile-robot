@@ -9,6 +9,7 @@ const int EMERGENCY_PIN = 7;
 const int FREE_ROTATION_PIN = 6;
 
 const int motor_total_num = 2;
+const int motor_decelation = 5;
 int motor_velocities[8]         = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_velocities[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_currents[8]   = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -97,6 +98,30 @@ void loop() {
         velocities_stmp[motor_num*2+1] = lowByte(motor_velocities[motor_num]);
       }
     }
+    else
+    {
+      for (int motor_num = 0; motor_num < 4; motor_num++)
+      {
+        if (motor_velocities[motor_num] > 0)
+        {
+          motor_velocities[motor_num] -= motor_decelation;
+          if (motor_velocities[motor_num] < 0)
+          {
+            motor_velocities[motor_num] = 0;
+          }
+        }
+        if (motor_velocities[motor_num] < 0)
+        {
+          motor_velocities[motor_num] += motor_decelation;
+          if (motor_velocities[motor_num] > 0)
+          {
+            motor_velocities[motor_num] = 0;
+          }
+        }
+        velocities_stmp[motor_num*2] = highByte(motor_velocities[motor_num]);
+        velocities_stmp[motor_num*2+1] = lowByte(motor_velocities[motor_num]);
+      }
+    }
     CAN.sendMsgBuf(0x32, 0, 8, velocities_stmp);
     if (emergency_pin_mode == LOW) // not emergency
     {
@@ -104,6 +129,30 @@ void loop() {
       {
         velocities_stmp[(motor_num-4)*2] = highByte(motor_velocities[motor_num]);
         velocities_stmp[(motor_num-4)*2+1] = lowByte(motor_velocities[motor_num]);
+      }
+    }
+    else
+    {
+      for (int motor_num = 4; motor_num < 8; motor_num++)
+      {
+        if (motor_velocities[motor_num] > 0)
+        {
+          motor_velocities[motor_num] -= motor_decelation;
+          if (motor_velocities[motor_num] < 0)
+          {
+            motor_velocities[motor_num] = 0;
+          }
+        }
+        if (motor_velocities[motor_num] < 0)
+        {
+          motor_velocities[motor_num] += motor_decelation;
+          if (motor_velocities[motor_num] > 0)
+          {
+            motor_velocities[motor_num] = 0;
+          }
+        }
+        velocities_stmp[motor_num*2] = highByte(motor_velocities[motor_num]);
+        velocities_stmp[motor_num*2+1] = lowByte(motor_velocities[motor_num]);
       }
     }
     CAN.sendMsgBuf(0x33, 0, 8, velocities_stmp);
@@ -129,13 +178,8 @@ void loop() {
     {
       Serial.write((byte)85);
       byte check_byte = 85;
-      unsigned char get_status_stmp[8] = {0x01, 0x01, 0x02, 0x04, 0x55, 0, 0, 0};
       for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
       {
-        //get_status_stmp[0] = motor_num + 1;
-        CAN.sendMsgBuf(0x107, 0, 8, get_status_stmp);
-        CAN.readMsgBuf(&read_len, read_buf);
-        Serial.println((char *)read_buf);
         Serial.write(highByte(current_motor_angles[motor_num]));
         Serial.write(lowByte(current_motor_angles[motor_num]));
         check_byte += highByte(current_motor_angles[motor_num]);
@@ -152,7 +196,7 @@ void loop() {
       Serial.write(check_byte);
     }
 
-    if (command[0] == 85 && check_byte == command[motor_total_num*2+1])
+    if (command[0] == 85 && check_byte == command[motor_total_num*2+1] && emergency_pin_mode == LOW)
     {
       for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
       {
