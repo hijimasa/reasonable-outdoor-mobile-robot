@@ -15,6 +15,8 @@ int current_motor_velocities[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_currents[8]   = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_angles[8]     = {0, 0, 0, 0, 0, 0, 0, 0};
 
+bool is_drive_mode = false;
+
 void setup() {
   unsigned char read_len;
   unsigned char read_buf[16];
@@ -28,11 +30,13 @@ void setup() {
     delay(100);
   }
 
-  unsigned char registor_stmp[8] = {0x01, 0x01, 0, 0, 0, 0, 0, 0};
+  unsigned char registor_stmp[8] = {0x00, 0x00, 0, 0, 0, 0, 0, 0};
   CAN.sendMsgBuf(0x109, 0, 8, registor_stmp);
+  delay(10);
 
   unsigned char feedback_stmp[8] = {0x80, 0x80, 0, 0, 0, 0, 0, 0};
   CAN.sendMsgBuf(0x106, 0, 8, feedback_stmp);
+  delay(10);
 
   // flush can data
   while (1)
@@ -75,18 +79,27 @@ void loop() {
       }
       CAN.readMsgBuf(&read_len, read_buf);
     }
+
+    is_drive_mode = false;
   }
   else // normal
   {
-    const unsigned char velocity_mode_stmp[8] = {0x02, 0x02, 0, 0, 0, 0, 0, 0};
-    CAN.sendMsgBuf(0x105, 0, 8, velocity_mode_stmp);
-    for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
+    if (is_drive_mode == false)
     {
-      while (CAN_MSGAVAIL != CAN.checkReceive())
+      is_drive_mode = true;
+      const unsigned char velocity_mode_stmp[8] = {0x02, 0x02, 0, 0, 0, 0, 0, 0};
+      CAN.sendMsgBuf(0x105, 0, 8, velocity_mode_stmp);
+      for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
       {
-        delay(10);
+        while (CAN_MSGAVAIL != CAN.checkReceive())
+        {
+          delay(10);
+        }
+        CAN.readMsgBuf(&read_len, read_buf);
       }
-      CAN.readMsgBuf(&read_len, read_buf);
+      unsigned char calibration_stmp[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+      CAN.sendMsgBuf(0x104, 0, 8, calibration_stmp);
+      delay(10);
     }
 
     unsigned char velocities_stmp[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -205,7 +218,7 @@ void loop() {
     }
   }
 
-  unsigned char get_status_stmp[8] = {0x00, 0x01, 0x02, 0x04, 0, 0, 0, 0};
+  unsigned char get_status_stmp[8] = {0x00, 0x01, 0x02, 0x04, 0xAA, 0, 0, 0};
   for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
   {
     get_status_stmp[0] = motor_num + 1;
