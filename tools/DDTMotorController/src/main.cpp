@@ -14,7 +14,12 @@ int motor_velocities[8]         = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_velocities[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_currents[8]   = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_angles[8]     = {0, 0, 0, 0, 0, 0, 0, 0};
-
+int current_command[8]          = {0, 0, 0, 0, 0, 0, 0, 0};
+int diff_vel[8][64]             = {{0}};
+int diff_vel_index              = 0;
+int k_p                         = 156; //32767 / 210;
+int k_d                         =   6; //32767 / 210 * 0.04 = k_i / 5;
+int k_i                         =  31; //32767 / 210 * 0.2;
 bool is_drive_mode = false;
 
 void setup() {
@@ -87,8 +92,8 @@ void loop() {
     if (is_drive_mode == false)
     {
       is_drive_mode = true;
-      const unsigned char velocity_mode_stmp[8] = {0x02, 0x02, 0, 0, 0, 0, 0, 0};
-      CAN.sendMsgBuf(0x105, 0, 8, velocity_mode_stmp);
+      const unsigned char open_loop_mode_stmp[8] = {0x00, 0x00, 0, 0, 0, 0, 0, 0};
+      CAN.sendMsgBuf(0x105, 0, 8, open_loop_mode_stmp);
       for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
       {
         while (CAN_MSGAVAIL != CAN.checkReceive())
@@ -97,8 +102,6 @@ void loop() {
         }
         CAN.readMsgBuf(&read_len, read_buf);
       }
-      unsigned char calibration_stmp[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-      CAN.sendMsgBuf(0x104, 0, 8, calibration_stmp);
       delay(10);
     }
 
@@ -107,32 +110,45 @@ void loop() {
     {
       for (int motor_num = 0; motor_num < 4; motor_num++)
       {
-        velocities_stmp[motor_num*2] = highByte(motor_velocities[motor_num]);
-        velocities_stmp[motor_num*2+1] = lowByte(motor_velocities[motor_num]);
+        int total_diff = 0;
+        for (int index = 0; index < 64; index++)
+        {
+          total_diff += diff_vel[motor_num][index];
+        }
+        int old_diff_index = diff_vel_index - 1;
+        if (old_diff_index < 0)
+        {
+          old_diff_index = 63;
+        }
+        current_command[motor_num] = k_p * diff_vel[motor_num][diff_vel_index]
+                                   + k_d * (diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index])
+                                   + k_i * total_diff;
+        velocities_stmp[motor_num*2] = highByte(current_command[motor_num]);
+        velocities_stmp[motor_num*2+1] = lowByte(current_command[motor_num]);
       }
     }
     else
     {
       for (int motor_num = 0; motor_num < 4; motor_num++)
       {
-        if (motor_velocities[motor_num] > 0)
+        if (current_command[motor_num] > 0)
         {
-          motor_velocities[motor_num] -= motor_decelation;
-          if (motor_velocities[motor_num] < 0)
+          current_command[motor_num] -= motor_decelation;
+          if (current_command[motor_num] < 0)
           {
-            motor_velocities[motor_num] = 0;
+            current_command[motor_num] = 0;
           }
         }
-        if (motor_velocities[motor_num] < 0)
+        if (current_command[motor_num] < 0)
         {
-          motor_velocities[motor_num] += motor_decelation;
-          if (motor_velocities[motor_num] > 0)
+          current_command[motor_num] += motor_decelation;
+          if (current_command[motor_num] > 0)
           {
-            motor_velocities[motor_num] = 0;
+            current_command[motor_num] = 0;
           }
         }
-        velocities_stmp[motor_num*2] = highByte(motor_velocities[motor_num]);
-        velocities_stmp[motor_num*2+1] = lowByte(motor_velocities[motor_num]);
+        velocities_stmp[motor_num*2] = highByte(current_command[motor_num]);
+        velocities_stmp[motor_num*2+1] = lowByte(current_command[motor_num]);
       }
     }
     CAN.sendMsgBuf(0x32, 0, 8, velocities_stmp);
@@ -140,32 +156,45 @@ void loop() {
     {
       for (int motor_num = 4; motor_num < 8; motor_num++)
       {
-        velocities_stmp[(motor_num-4)*2] = highByte(motor_velocities[motor_num]);
-        velocities_stmp[(motor_num-4)*2+1] = lowByte(motor_velocities[motor_num]);
+        int total_diff = 0;
+        for (int index = 0; index < 64; index++)
+        {
+          total_diff += diff_vel[motor_num][index];
+        }
+        int old_diff_index = diff_vel_index - 1;
+        if (old_diff_index < 0)
+        {
+          old_diff_index = 63;
+        }
+        current_command[motor_num] = k_p * diff_vel[motor_num][diff_vel_index]
+                                   + k_d * (diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index])
+                                   + k_i * total_diff;
+        velocities_stmp[(motor_num-4)*2] = highByte(current_command[motor_num]);
+        velocities_stmp[(motor_num-4)*2+1] = lowByte(current_command[motor_num]);
       }
     }
     else
     {
       for (int motor_num = 4; motor_num < 8; motor_num++)
       {
-        if (motor_velocities[motor_num] > 0)
+        if (current_command[motor_num] > 0)
         {
-          motor_velocities[motor_num] -= motor_decelation;
-          if (motor_velocities[motor_num] < 0)
+          current_command[motor_num] -= motor_decelation;
+          if (current_command[motor_num] < 0)
           {
-            motor_velocities[motor_num] = 0;
+            current_command[motor_num] = 0;
           }
         }
-        if (motor_velocities[motor_num] < 0)
+        if (current_command[motor_num] < 0)
         {
-          motor_velocities[motor_num] += motor_decelation;
-          if (motor_velocities[motor_num] > 0)
+          current_command[motor_num] += motor_decelation;
+          if (current_command[motor_num] > 0)
           {
-            motor_velocities[motor_num] = 0;
+            current_command[motor_num] = 0;
           }
         }
-        velocities_stmp[motor_num*2] = highByte(motor_velocities[motor_num]);
-        velocities_stmp[motor_num*2+1] = lowByte(motor_velocities[motor_num]);
+        velocities_stmp[motor_num*2] = highByte(current_command[motor_num]);
+        velocities_stmp[motor_num*2+1] = lowByte(current_command[motor_num]);
       }
     }
     CAN.sendMsgBuf(0x33, 0, 8, velocities_stmp);
@@ -231,6 +260,20 @@ void loop() {
     current_motor_velocities[motor_num] = (read_buf[0] << 8) + read_buf[1];
     current_motor_currents[motor_num] = (read_buf[2] << 8) + read_buf[3];
     current_motor_angles[motor_num] = (read_buf[4] << 8) + read_buf[5];
+    
+    diff_vel_index++;
+    if (diff_vel_index > 64)
+    {
+      diff_vel_index = 0;
+    }
+    if (emergency_pin_mode == LOW) // not emergency
+    {
+      diff_vel[motor_num][diff_vel_index] = motor_velocities[motor_num] - current_motor_velocities[motor_num];
+    }
+    else // command becomes zero if emergency is enable.
+    {
+      diff_vel[motor_num][diff_vel_index] = 0 - current_motor_velocities[motor_num];
+    }
   }
 
   delay(10);
