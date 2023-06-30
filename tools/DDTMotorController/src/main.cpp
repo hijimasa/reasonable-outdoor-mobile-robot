@@ -9,17 +9,17 @@ const int EMERGENCY_PIN = 7;
 const int FREE_ROTATION_PIN = 6;
 
 const int motor_total_num = 2;
-const int motor_decelation = 5;
+const int motor_decelation = 2000;
 int motor_velocities[8]         = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_velocities[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_currents[8]   = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_angles[8]     = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_command[8]          = {0, 0, 0, 0, 0, 0, 0, 0};
-int diff_vel[8][64]             = {{0}};
+int diff_vel[8][4]             = {{0}};
 int diff_vel_index              = 0;
-int k_p                         = 156; //32767 / 210;
-int k_d                         =   6; //32767 / 210 * 0.04 = k_i / 5;
-int k_i                         =  31; //32767 / 210 * 0.2;
+int k_p                         =  80;
+int k_d                         =  10;
+int k_i                         =  40;
 bool is_drive_mode = false;
 
 void setup() {
@@ -110,19 +110,36 @@ void loop() {
     {
       for (int motor_num = 0; motor_num < 4; motor_num++)
       {
-        int total_diff = 0;
-        for (int index = 0; index < 64; index++)
-        {
-          total_diff += diff_vel[motor_num][index];
-        }
         int old_diff_index = diff_vel_index - 1;
         if (old_diff_index < 0)
         {
-          old_diff_index = 63;
+          old_diff_index += 4;
         }
-        current_command[motor_num] = k_p * diff_vel[motor_num][diff_vel_index]
-                                   + k_d * (diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index])
-                                   + k_i * total_diff;
+        int old_diff_index2 = diff_vel_index - 2;
+        if (old_diff_index2 < 0)
+        {
+          old_diff_index += 4;
+        }
+        int diff_control_amount = k_p * (diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index])
+                                 + k_d * ((diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index]) - (diff_vel[motor_num][old_diff_index] - diff_vel[motor_num][old_diff_index2]))
+                                 + k_i * diff_vel[motor_num][diff_vel_index];
+        if ((long) diff_control_amount + (long) current_command[motor_num] > 32767)
+        {
+          current_command[motor_num] = 32767;
+        }
+        else if ((long) diff_control_amount + (long) current_command[motor_num] < -32767)
+        {
+          current_command[motor_num] = -32767;
+        }
+        else
+        {
+          current_command[motor_num] += diff_control_amount;
+        }
+        Serial.println(motor_num);
+        Serial.println(current_command[motor_num]);
+        Serial.println(diff_vel_index);
+        Serial.println(diff_control_amount);
+        Serial.println();
         velocities_stmp[motor_num*2] = highByte(current_command[motor_num]);
         velocities_stmp[motor_num*2+1] = lowByte(current_command[motor_num]);
       }
@@ -156,19 +173,31 @@ void loop() {
     {
       for (int motor_num = 4; motor_num < 8; motor_num++)
       {
-        int total_diff = 0;
-        for (int index = 0; index < 64; index++)
-        {
-          total_diff += diff_vel[motor_num][index];
-        }
         int old_diff_index = diff_vel_index - 1;
         if (old_diff_index < 0)
         {
-          old_diff_index = 63;
+          old_diff_index += 4;
         }
-        current_command[motor_num] = k_p * diff_vel[motor_num][diff_vel_index]
-                                   + k_d * (diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index])
-                                   + k_i * total_diff;
+        int old_diff_index2 = diff_vel_index - 2;
+        if (old_diff_index2 < 0)
+        {
+          old_diff_index += 4;
+        }
+        int diff_control_amount = k_p * (diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index])
+                                 + k_d * ((diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index]) - (diff_vel[motor_num][old_diff_index] - diff_vel[motor_num][old_diff_index2]))
+                                 + k_i * diff_vel[motor_num][diff_vel_index];
+        if ((long) diff_control_amount + (long) current_command[motor_num] > 32767)
+        {
+          current_command[motor_num] = 32767;
+        }
+        else if ((long) diff_control_amount + (long) current_command[motor_num] < -32767)
+        {
+          current_command[motor_num] = -32767;
+        }
+        else
+        {
+          current_command[motor_num] += diff_control_amount;
+        }
         velocities_stmp[(motor_num-4)*2] = highByte(current_command[motor_num]);
         velocities_stmp[(motor_num-4)*2+1] = lowByte(current_command[motor_num]);
       }
@@ -262,7 +291,7 @@ void loop() {
     current_motor_angles[motor_num] = (read_buf[4] << 8) + read_buf[5];
     
     diff_vel_index++;
-    if (diff_vel_index > 64)
+    if (diff_vel_index >= 4)
     {
       diff_vel_index = 0;
     }
