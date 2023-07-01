@@ -5,21 +5,26 @@
 const int SPI_CS_PIN = 9;
 mcp2515_can CAN(SPI_CS_PIN);
 
-const int EMERGENCY_PIN = 7;
-const int FREE_ROTATION_PIN = 6;
+const int EMERGENCY_PIN         = 7;
+const int FREE_ROTATION_PIN     = 6;
 
-const int motor_total_num = 2; // Set your motor total num
-const int motor_decelation = 2000;
+const int motor_total_num       = 2; // Set your motor total num
+const int motor_decelation      = 2000;
 int motor_velocities[8]         = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_velocities[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_currents[8]   = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_angles[8]     = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_command[8]          = {0, 0, 0, 0, 0, 0, 0, 0};
-int diff_vel[8][4]             = {{0}};
+
+int diff_vel[8][4]              = {{0}};
 int diff_vel_index              = 0;
-int k_p                         =  80;
-int k_d                         =  10;
-int k_i                         =  40;
+
+int k_p                         = 80;
+int k_d                         = 10;
+int k_i                         = 40;
+
+int timeout_count               = 0;
+
 bool is_drive_mode = false;
 
 void update_command(int emergency_pin_mode, int free_rotation_pin_mode)
@@ -182,6 +187,8 @@ void loop() {
     int key = Serial.available();
     if (key >= motor_total_num*2+2)
     {
+      timeout_count = 0;
+
       // get command
       {
         byte check_byte = 0;
@@ -223,6 +230,19 @@ void loop() {
           check_byte += lowByte(current_motor_currents[motor_num]);
         }
         Serial.write(check_byte);
+      }
+    }
+    else
+    {
+      timeout_count++;
+      if (timeout_count > 100)
+      {
+        timeout_count = 0;
+        
+        for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
+        {
+          motor_velocities[motor_num] = 0;
+        }
       }
     }
   }
