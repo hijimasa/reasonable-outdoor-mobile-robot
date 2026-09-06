@@ -20,8 +20,18 @@ int diff_vel_index              = 0;
 int k_p                         =  80;
 int k_d                         =  10;
 int k_i                         =  40;
-int timeout_count               = 0;
 bool is_drive_mode = false;
+
+// Host link. One 6-byte frame per command: 0x55, two int16 rpm big-endian,
+// checksum = sum of the first 5 bytes. The reply is 0x55, three int16 per
+// motor (angle, rpm, current), checksum -- 14 bytes for two motors.
+const int command_len = motor_total_num * 2 + 2;
+byte command[command_len];
+int command_len_received = 0;
+// Stop the motors when the host goes quiet. Measured in time, not loop
+// iterations, so it does not depend on how long a loop takes.
+const unsigned long command_timeout_ms = 500;
+unsigned long last_command_ms = 0;
 
 void setup() {
   unsigned char read_len;
@@ -119,7 +129,7 @@ void loop() {
         int old_diff_index2 = diff_vel_index - 2;
         if (old_diff_index2 < 0)
         {
-          old_diff_index += 4;
+          old_diff_index2 += 4;
         }
         int diff_control_amount = k_p * (diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index])
                                  + k_d * ((diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index]) - (diff_vel[motor_num][old_diff_index] - diff_vel[motor_num][old_diff_index2]))
@@ -136,11 +146,6 @@ void loop() {
         {
           current_command[motor_num] += diff_control_amount;
         }
-        Serial.println(motor_num);
-        Serial.println(current_command[motor_num]);
-        Serial.println(diff_vel_index);
-        Serial.println(diff_control_amount);
-        Serial.println();
         velocities_stmp[motor_num*2] = highByte(current_command[motor_num]);
         velocities_stmp[motor_num*2+1] = lowByte(current_command[motor_num]);
       }
@@ -182,7 +187,7 @@ void loop() {
         int old_diff_index2 = diff_vel_index - 2;
         if (old_diff_index2 < 0)
         {
-          old_diff_index += 4;
+          old_diff_index2 += 4;
         }
         int diff_control_amount = k_p * (diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index])
                                  + k_d * ((diff_vel[motor_num][diff_vel_index] - diff_vel[motor_num][old_diff_index]) - (diff_vel[motor_num][old_diff_index] - diff_vel[motor_num][old_diff_index2]))
@@ -223,72 +228,76 @@ void loop() {
             current_command[motor_num] = 0;
           }
         }
-        velocities_stmp[motor_num*2] = highByte(current_command[motor_num]);
-        velocities_stmp[motor_num*2+1] = lowByte(current_command[motor_num]);
+        velocities_stmp[(motor_num-4)*2] = highByte(current_command[motor_num]);
+        velocities_stmp[(motor_num-4)*2+1] = lowByte(current_command[motor_num]);
       }
     }
     CAN.sendMsgBuf(0x33, 0, 8, velocities_stmp);
   }
 
-  // put your main code here, to run repeatedly:
-  byte command[256];
-  int key = Serial.available();
-
-  if (key >= motor_total_num*2+2)
+  // Host link. Scan for the 0x55 header instead of trusting that whatever
+  // is in the buffer starts a frame: a byte lost to an overrun used to leave
+  // every following command misaligned until the buffer happened to empty.
+  // Every valid frame gets a status reply, so the host sees one answer per
+  // command it sent.
+  while (Serial.available() > 0)
   {
-    timeout_count = 0;
+    byte b = Serial.read();
+    if (command_len_received == 0 && b != 85)
+    {
+      continue;
+    }
+    command[command_len_received++] = b;
+    if (command_len_received < command_len)
+    {
+      continue;
+    }
+    command_len_received = 0;
 
     byte check_byte = 0;
-    for (int i = 0; i < key; i++)
+    for (int i = 0; i < command_len - 1; i++)
     {
-      command[i] = Serial.read();
-
-      if (i < motor_total_num*2+1)
-      {
-        check_byte += command[i];
-      }
+      check_byte += command[i];
+    }
+    if (check_byte != command[command_len - 1])
+    {
+      continue;
     }
 
-    {
-      Serial.write((byte)85);
-      byte check_byte = 85;
-      for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
-      {
-        Serial.write(highByte(current_motor_angles[motor_num]));
-        Serial.write(lowByte(current_motor_angles[motor_num]));
-        check_byte += highByte(current_motor_angles[motor_num]);
-        check_byte += lowByte(current_motor_angles[motor_num]);
-        Serial.write(highByte(current_motor_velocities[motor_num]));
-        Serial.write(lowByte(current_motor_velocities[motor_num]));
-        check_byte += highByte(current_motor_velocities[motor_num]);
-        check_byte += lowByte(current_motor_velocities[motor_num]);
-        Serial.write(highByte(current_motor_currents[motor_num]));
-        Serial.write(lowByte(current_motor_currents[motor_num]));
-        check_byte += highByte(current_motor_currents[motor_num]);
-        check_byte += lowByte(current_motor_currents[motor_num]);
-      }
-      Serial.write(check_byte);
-    }
-
-    if (command[0] == 85 && check_byte == command[motor_total_num*2+1] && emergency_pin_mode == LOW)
+    last_command_ms = millis();
+    if (emergency_pin_mode == LOW) // not emergency
     {
       for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
       {
-        motor_velocities[motor_num] = (command[2*motor_num+1]  << 8)+ command[2*motor_num+2];
+        motor_velocities[motor_num] = (command[2*motor_num+1] << 8) + command[2*motor_num+2];
       }
     }
+
+    byte reply_check = 85;
+    Serial.write((byte)85);
+    for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
+    {
+      Serial.write(highByte(current_motor_angles[motor_num]));
+      Serial.write(lowByte(current_motor_angles[motor_num]));
+      reply_check += highByte(current_motor_angles[motor_num]);
+      reply_check += lowByte(current_motor_angles[motor_num]);
+      Serial.write(highByte(current_motor_velocities[motor_num]));
+      Serial.write(lowByte(current_motor_velocities[motor_num]));
+      reply_check += highByte(current_motor_velocities[motor_num]);
+      reply_check += lowByte(current_motor_velocities[motor_num]);
+      Serial.write(highByte(current_motor_currents[motor_num]));
+      Serial.write(lowByte(current_motor_currents[motor_num]));
+      reply_check += highByte(current_motor_currents[motor_num]);
+      reply_check += lowByte(current_motor_currents[motor_num]);
+    }
+    Serial.write(reply_check);
   }
-  else
-  {
-    timeout_count++;
 
-    if (timeout_count > 100)
+  if (millis() - last_command_ms > command_timeout_ms)
+  {
+    for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
     {
-      timeout_count = 0;
-      for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
-      {
-        motor_velocities[motor_num] = 0;
-      }
+      motor_velocities[motor_num] = 0;
     }
   }
 
