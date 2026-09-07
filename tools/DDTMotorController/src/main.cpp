@@ -33,6 +33,46 @@ int command_len_received = 0;
 const unsigned long command_timeout_ms = 500;
 unsigned long last_command_ms = 0;
 
+// 500 kbaud, not 9600. A command is 6 bytes and a reply 14, which at 9600 is
+// 20.8 ms on the wire every control cycle -- comparable to everything else the
+// loop does. 500000 divides 16 MHz exactly (UBRR 3 with U2X, 0.00% error) and
+// is a standard Linux baud constant, so both ends land on it without a
+// mismatch; 115200 would be +2.12% on this AVR, inside 8N1 tolerance but with
+// the least margin of the candidates and no benefit here. The host must be
+// rebuilt with B500000 at the same time or the link goes silent.
+const unsigned long HOST_BAUD = 500000;
+
+// The PID below is an incremental form with no dt: k_i * error is added once
+// per iteration, so the integral gain is proportional to the loop rate and the
+// period is part of the tuning. It used to be three delay(10) calls -- two
+// waiting for CAN status replies and one at the end -- so 30 ms whenever the
+// motors answered promptly. Keeping the same 30 ms, held deliberately rather
+// than falling out of where the sleeps landed, leaves the motor loop tuned as
+// it was.
+//
+// It also has to stay paced: at 500 kbps a CAN frame is about 0.26 ms and this
+// loop sends six of them, so running free would put the bus near saturation.
+const unsigned long LOOP_PERIOD_MS = 30;
+
+// The motors answer a status request in well under a millisecond. delay(10)
+// spent ten of them doing nothing, twice a loop, and tied the loop period to
+// where that tick happened to fall. checkReceive() is an SPI read, so this
+// polls at SPI speed rather than spinning on nothing.
+const unsigned long CAN_REPLY_TIMEOUT_US = 20000;
+
+static bool waitForCanFrame(unsigned long timeout_us)
+{
+  const unsigned long start = micros();
+  while (CAN_MSGAVAIL != CAN.checkReceive())
+  {
+    if (micros() - start > timeout_us)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 void setup() {
   unsigned char read_len;
   unsigned char read_buf[16];
@@ -40,7 +80,7 @@ void setup() {
   pinMode(EMERGENCY_PIN, INPUT_PULLUP);
   pinMode(FREE_ROTATION_PIN, INPUT_PULLUP);
 
-  Serial.begin(9600);
+  Serial.begin(HOST_BAUD);
 
   while (CAN_OK != CAN.begin(CAN_500KBPS)) {             // init can bus : baudrate = 500k
     delay(100);
@@ -76,7 +116,75 @@ void setup() {
   }
 }
 
+// Answer whatever the host has sent. Called from loop() and again while the
+// loop waits out its period, so a command is replied to within microseconds
+// of arriving instead of whenever the loop next comes round to it. The reply
+// used to be assembled once a pass, behind the CAN status polling, so its
+// latency was anywhere from nothing to a full loop depending on when the
+// command landed -- and that spread is what the host saw as an uneven cycle.
+static void serviceHostLink(int emergency_pin_mode)
+{
+  // Host link. Scan for the 0x55 header instead of trusting that whatever
+  // is in the buffer starts a frame: a byte lost to an overrun used to leave
+  // every following command misaligned until the buffer happened to empty.
+  // Every valid frame gets a status reply, so the host sees one answer per
+  // command it sent.
+  while (Serial.available() > 0)
+  {
+    byte b = Serial.read();
+    if (command_len_received == 0 && b != 85)
+    {
+      continue;
+    }
+    command[command_len_received++] = b;
+    if (command_len_received < command_len)
+    {
+      continue;
+    }
+    command_len_received = 0;
+
+    byte check_byte = 0;
+    for (int i = 0; i < command_len - 1; i++)
+    {
+      check_byte += command[i];
+    }
+    if (check_byte != command[command_len - 1])
+    {
+      continue;
+    }
+
+    last_command_ms = millis();
+    if (emergency_pin_mode == LOW) // not emergency
+    {
+      for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
+      {
+        motor_velocities[motor_num] = (command[2*motor_num+1] << 8) + command[2*motor_num+2];
+      }
+    }
+
+    byte reply_check = 85;
+    Serial.write((byte)85);
+    for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
+    {
+      Serial.write(highByte(current_motor_angles[motor_num]));
+      Serial.write(lowByte(current_motor_angles[motor_num]));
+      reply_check += highByte(current_motor_angles[motor_num]);
+      reply_check += lowByte(current_motor_angles[motor_num]);
+      Serial.write(highByte(current_motor_velocities[motor_num]));
+      Serial.write(lowByte(current_motor_velocities[motor_num]));
+      reply_check += highByte(current_motor_velocities[motor_num]);
+      reply_check += lowByte(current_motor_velocities[motor_num]);
+      Serial.write(highByte(current_motor_currents[motor_num]));
+      Serial.write(lowByte(current_motor_currents[motor_num]));
+      reply_check += highByte(current_motor_currents[motor_num]);
+      reply_check += lowByte(current_motor_currents[motor_num]);
+    }
+    Serial.write(reply_check);
+  }
+}
+
 void loop() {
+  const unsigned long loop_start_ms = millis();
   unsigned char read_len;
   unsigned char read_buf[16];
 
@@ -89,11 +197,10 @@ void loop() {
     CAN.sendMsgBuf(0x105, 0, 8, disable_mode_stmp);
     for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
     {
-      while (CAN_MSGAVAIL != CAN.checkReceive())
+      if (waitForCanFrame(CAN_REPLY_TIMEOUT_US))
       {
-        delay(10);
+        CAN.readMsgBuf(&read_len, read_buf);
       }
-      CAN.readMsgBuf(&read_len, read_buf);
     }
 
     is_drive_mode = false;
@@ -107,11 +214,10 @@ void loop() {
       CAN.sendMsgBuf(0x105, 0, 8, open_loop_mode_stmp);
       for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
       {
-        while (CAN_MSGAVAIL != CAN.checkReceive())
+        if (waitForCanFrame(CAN_REPLY_TIMEOUT_US))
         {
-          delay(10);
+          CAN.readMsgBuf(&read_len, read_buf);
         }
-        CAN.readMsgBuf(&read_len, read_buf);
       }
       delay(10);
     }
@@ -235,63 +341,7 @@ void loop() {
     CAN.sendMsgBuf(0x33, 0, 8, velocities_stmp);
   }
 
-  // Host link. Scan for the 0x55 header instead of trusting that whatever
-  // is in the buffer starts a frame: a byte lost to an overrun used to leave
-  // every following command misaligned until the buffer happened to empty.
-  // Every valid frame gets a status reply, so the host sees one answer per
-  // command it sent.
-  while (Serial.available() > 0)
-  {
-    byte b = Serial.read();
-    if (command_len_received == 0 && b != 85)
-    {
-      continue;
-    }
-    command[command_len_received++] = b;
-    if (command_len_received < command_len)
-    {
-      continue;
-    }
-    command_len_received = 0;
-
-    byte check_byte = 0;
-    for (int i = 0; i < command_len - 1; i++)
-    {
-      check_byte += command[i];
-    }
-    if (check_byte != command[command_len - 1])
-    {
-      continue;
-    }
-
-    last_command_ms = millis();
-    if (emergency_pin_mode == LOW) // not emergency
-    {
-      for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
-      {
-        motor_velocities[motor_num] = (command[2*motor_num+1] << 8) + command[2*motor_num+2];
-      }
-    }
-
-    byte reply_check = 85;
-    Serial.write((byte)85);
-    for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
-    {
-      Serial.write(highByte(current_motor_angles[motor_num]));
-      Serial.write(lowByte(current_motor_angles[motor_num]));
-      reply_check += highByte(current_motor_angles[motor_num]);
-      reply_check += lowByte(current_motor_angles[motor_num]);
-      Serial.write(highByte(current_motor_velocities[motor_num]));
-      Serial.write(lowByte(current_motor_velocities[motor_num]));
-      reply_check += highByte(current_motor_velocities[motor_num]);
-      reply_check += lowByte(current_motor_velocities[motor_num]);
-      Serial.write(highByte(current_motor_currents[motor_num]));
-      Serial.write(lowByte(current_motor_currents[motor_num]));
-      reply_check += highByte(current_motor_currents[motor_num]);
-      reply_check += lowByte(current_motor_currents[motor_num]);
-    }
-    Serial.write(reply_check);
-  }
+  serviceHostLink(emergency_pin_mode);
 
   if (millis() - last_command_ms > command_timeout_ms)
   {
@@ -306,14 +356,16 @@ void loop() {
   {
     get_status_stmp[0] = motor_num + 1;
     CAN.sendMsgBuf(0x107, 0, 8, get_status_stmp);
-    while (CAN_MSGAVAIL != CAN.checkReceive())
+    // A motor that does not answer keeps its last reading rather than whatever
+    // is left in read_buf. There was no timeout here at all, so a silent motor
+    // would have stopped the loop for good.
+    if (waitForCanFrame(CAN_REPLY_TIMEOUT_US))
     {
-      delay(10);
+      CAN.readMsgBuf(&read_len, read_buf);
+      current_motor_velocities[motor_num] = (read_buf[0] << 8) + read_buf[1];
+      current_motor_currents[motor_num] = (read_buf[2] << 8) + read_buf[3];
+      current_motor_angles[motor_num] = (read_buf[4] << 8) + read_buf[5];
     }
-    CAN.readMsgBuf(&read_len, read_buf);
-    current_motor_velocities[motor_num] = (read_buf[0] << 8) + read_buf[1];
-    current_motor_currents[motor_num] = (read_buf[2] << 8) + read_buf[3];
-    current_motor_angles[motor_num] = (read_buf[4] << 8) + read_buf[5];
     
     diff_vel_index++;
     if (diff_vel_index >= 4)
@@ -330,5 +382,10 @@ void loop() {
     }
   }
 
-  delay(10);
+  // Hold the period rather than sleeping a flat 10 ms on top of however long
+  // the work took, and spend the wait answering the host instead of idling.
+  while (millis() - loop_start_ms < LOOP_PERIOD_MS)
+  {
+    serviceHostLink(emergency_pin_mode);
+  }
 }
