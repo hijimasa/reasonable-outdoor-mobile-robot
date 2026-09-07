@@ -351,6 +351,22 @@ void loop() {
     }
   }
 
+  // One step per loop, not one per motor. diff_vel_index is a single index into
+  // a per-motor ring, and advancing it inside the loop below gave motor 0 the
+  // odd slots and motor 1 the even ones. The PID reads diff_vel[motor][cur],
+  // [cur-1], [cur-2] from whatever the index happened to be, so motor 0 was
+  // differentiating slots it had never written -- its error history read as
+  // 0, E, 0 and the increment came out as -(k_p + 2*k_d) * E, the wrong sign,
+  // which walks the duty to the rail instead of tracking. Motor 1 read
+  // e[n-1] as a permanent zero, so its k_d term was extra proportional gain
+  // rather than damping. Advancing once here gives every motor the same slot
+  // and makes each ring its own history.
+  diff_vel_index++;
+  if (diff_vel_index >= 4)
+  {
+    diff_vel_index = 0;
+  }
+
   unsigned char get_status_stmp[8] = {0x00, 0x01, 0x02, 0x04, 0xAA, 0, 0, 0};
   for (int motor_num = 0; motor_num < motor_total_num; motor_num++)
   {
@@ -367,11 +383,6 @@ void loop() {
       current_motor_angles[motor_num] = (read_buf[4] << 8) + read_buf[5];
     }
     
-    diff_vel_index++;
-    if (diff_vel_index >= 4)
-    {
-      diff_vel_index = 0;
-    }
     if (emergency_pin_mode == LOW && free_rotation_pin_mode == HIGH) // not emergency
     {
       diff_vel[motor_num][diff_vel_index] = motor_velocities[motor_num] - current_motor_velocities[motor_num];
