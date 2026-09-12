@@ -9,6 +9,25 @@ const int EMERGENCY_PIN = 7;
 const int FREE_ROTATION_PIN = 6;
 
 const int motor_total_num = 2;
+
+// Which way a positive duty turns each motor, relative to the direction that
+// motor reports as positive velocity. Measured on the bench with the wheels
+// off the ground (tools/DDTMotorSignTest, 2026-09-12): ramping motor 0 to
+// +4000 made it report -19 rpm with its angle falling, and -4000 made it
+// report +20 rpm with the angle rising, while motor 1 reported +27 and -27 the
+// obvious way round. So motor 0 is wired the other way about.
+//
+// The PID compares a target with that reported velocity, so without this the
+// loop on motor 0 is positive feedback: a -1 rpm target drove the duty down,
+// which drove the reported velocity up, which made the error more negative
+// still, and the duty reached the rail inside four seconds. Commanded -1.3
+// rpm, the wheel ran at +88 and the robot turned at 3.5 rad/s against a
+// 0.1 rad/s request.
+//
+// This belongs on the duty and not on the feedback: the feedback is what the
+// host integrates into odometry, and that was checked against a hand-turned
+// wheel on 2026-09-06 and is right as it stands.
+const int motor_duty_sign[8] = {-1, 1, 1, 1, 1, 1, 1, 1};
 const int motor_decelation = 2000;
 int motor_velocities[8]         = {0, 0, 0, 0, 0, 0, 0, 0};
 int current_motor_velocities[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -252,8 +271,9 @@ void loop() {
         {
           current_command[motor_num] += diff_control_amount;
         }
-        velocities_stmp[motor_num*2] = highByte(current_command[motor_num]);
-        velocities_stmp[motor_num*2+1] = lowByte(current_command[motor_num]);
+        const int duty = motor_duty_sign[motor_num] * current_command[motor_num];
+        velocities_stmp[motor_num*2] = highByte(duty);
+        velocities_stmp[motor_num*2+1] = lowByte(duty);
       }
     }
     else
@@ -276,8 +296,9 @@ void loop() {
             current_command[motor_num] = 0;
           }
         }
-        velocities_stmp[motor_num*2] = highByte(current_command[motor_num]);
-        velocities_stmp[motor_num*2+1] = lowByte(current_command[motor_num]);
+        const int duty = motor_duty_sign[motor_num] * current_command[motor_num];
+        velocities_stmp[motor_num*2] = highByte(duty);
+        velocities_stmp[motor_num*2+1] = lowByte(duty);
       }
     }
     CAN.sendMsgBuf(0x32, 0, 8, velocities_stmp);
@@ -310,8 +331,9 @@ void loop() {
         {
           current_command[motor_num] += diff_control_amount;
         }
-        velocities_stmp[(motor_num-4)*2] = highByte(current_command[motor_num]);
-        velocities_stmp[(motor_num-4)*2+1] = lowByte(current_command[motor_num]);
+        const int duty = motor_duty_sign[motor_num] * current_command[motor_num];
+        velocities_stmp[(motor_num-4)*2] = highByte(duty);
+        velocities_stmp[(motor_num-4)*2+1] = lowByte(duty);
       }
     }
     else
@@ -334,8 +356,9 @@ void loop() {
             current_command[motor_num] = 0;
           }
         }
-        velocities_stmp[(motor_num-4)*2] = highByte(current_command[motor_num]);
-        velocities_stmp[(motor_num-4)*2+1] = lowByte(current_command[motor_num]);
+        const int duty = motor_duty_sign[motor_num] * current_command[motor_num];
+        velocities_stmp[(motor_num-4)*2] = highByte(duty);
+        velocities_stmp[(motor_num-4)*2+1] = lowByte(duty);
       }
     }
     CAN.sendMsgBuf(0x33, 0, 8, velocities_stmp);
